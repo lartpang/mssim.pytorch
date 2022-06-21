@@ -1,5 +1,3 @@
-# https://github.com/Po-Hsun-Su/pytorch-ssim/blob/master/pytorch_ssim/__init__.py
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
