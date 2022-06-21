@@ -1,3 +1,5 @@
+# https://github.com/Po-Hsun-Su/pytorch-ssim/blob/master/pytorch_ssim/__init__.py
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -84,59 +86,78 @@ class SSIM(nn.Module):
         self.keep_batch_dim = keep_batch_dim
         self.return_log = return_log
 
-        self.gaussian_filer = GaussianFilter2D(window_size=window_size, in_channels=in_channels, sigma=sigma)
+        self.gaussian_filter = GaussianFilter2D(window_size=window_size, in_channels=in_channels, sigma=sigma)
 
+    @torch.cuda.amp.autocast(enabled=False)
     def forward(self, x, y):
-        return ssim(
-            x,
-            y,
-            gaussian_filter=self.gaussian_filer,
-            C1=self.C1,
-            C2=self.C2,
-            keep_batch_dim=self.keep_batch_dim,
-            return_log=self.return_log,
-        )
+        """Calculate the mean SSIM (MSSIM) between two 4d tensors.
+
+        Args:
+            x (Tensor): 4d tensor
+            y (Tensor): 4d tensor
+
+        Returns:
+            Tensor: MSSIM
+        """
+        assert x.shape == y.shape, f"x: {x.shape} and y: {y.shape} must be the same"
+        assert x.ndim == y.ndim == 4, f"x: {x.ndim} and y: {y.ndim} must be 4"
+        assert (
+            x.type() == y.type() == self.gaussian_filter.gaussian_window2d.type()
+        ), f"x: {x.type()} and y: {y.type()} must be {self.gaussian_filter.gaussian_window2d.type()}"
+
+        mu_x = self.gaussian_filter(x)  # equ 14
+        mu_y = self.gaussian_filter(y)  # equ 14
+        sigma2_x = self.gaussian_filter(x * x) - mu_x * mu_x  # equ 15
+        sigma2_y = self.gaussian_filter(y * y) - mu_y * mu_y  # equ 15
+        sigma_xy = self.gaussian_filter(x * y) - mu_x * mu_y  # equ 16
+
+        # equ 13 in ref1
+        A1 = 2 * mu_x * mu_y + self.C1
+        A2 = 2 * sigma_xy + self.C2
+        B1 = mu_x * mu_x + mu_y * mu_y + self.C1
+        B2 = sigma2_x + sigma2_y + self.C2
+        S = (A1 * A2) / (B1 * B2)
+
+        if self.return_log:
+            S = S - S.min()
+            S = S / S.max()
+            S = -torch.log(S + 1e-8)
+
+        if self.keep_batch_dim:
+            return S.mean(dim=(1, 2, 3))
+        else:
+            return S.mean()
 
 
-@torch.cuda.amp.autocast(enabled=False)
-def ssim(x, y, gaussian_filter, C1, C2, keep_batch_dim=False, return_log=False):
-    """Calculate the mean SSIM (MSSIM) between two 4d tensors.
+def ssim(
+    x, y, *, window_size=11, in_channels=1, sigma=1.5, K1=0.01, K2=0.03, L=1, keep_batch_dim=False, return_log=False
+):
+    """Calculate the mean SSIM (MSSIM) between two 4D tensors.
 
     Args:
         x (Tensor): 4d tensor
         y (Tensor): 4d tensor
-        gaussian_filter (GaussianFilter2D): the gaussian filter object
-        C1 (float): the constant to avoid instability
-        C2 (float): the constant to avoid instability
+        window_size (int, optional): The window size of the gaussian filter. Defaults to 11.
+        in_channels (int, optional): The number of channels of the 4d tensor. Defaults to False.
+        sigma (float, optional): The sigma of the gaussian filter. Defaults to 1.5.
+        K1 (float, optional): K1 of MSSIM. Defaults to 0.01.
+        K2 (float, optional): K2 of MSSIM. Defaults to 0.03.
+        L (int, optional): The dynamic range of the pixel values (255 for 8-bit grayscale images). Defaults to 1.
         keep_batch_dim (bool, optional): Whether to keep the batch dim. Defaults to False.
         return_log (bool, optional): Whether to return the logarithmic form. Defaults to False.
+
 
     Returns:
         Tensor: MSSIM
     """
-    assert x.shape == y.shape, f"x: {x.shape} != y: {y.shape}"
-    assert x.ndim == y.ndim == 4, f"x: {x.ndim} != y: {y.ndim} != 4"
-    assert x.type() == y.type(), f"x: {x.type()} != y: {y.type()}"
-
-    mu_x = gaussian_filter(x)  # equ 14
-    mu_y = gaussian_filter(y)  # equ 14
-    sigma2_x = gaussian_filter(x * x) - mu_x * mu_x  # equ 15
-    sigma2_y = gaussian_filter(y * y) - mu_y * mu_y  # equ 15
-    sigma_xy = gaussian_filter(x * y) - mu_x * mu_y  # equ 16
-
-    # equ 13 in ref1
-    A1 = 2 * mu_x * mu_y + C1
-    A2 = 2 * sigma_xy + C2
-    B1 = mu_x * mu_x + mu_y * mu_y + C1
-    B2 = sigma2_x + sigma2_y + C2
-    S = (A1 * A2) / (B1 * B2)
-
-    if return_log:
-        S = S - S.min()
-        S = S / S.max()
-        S = -torch.log(S + 1e-8)
-
-    if keep_batch_dim:
-        return S.mean(dim=(1, 2, 3))
-    else:
-        return S.mean()
+    ssim_obj = SSIM(
+        window_size=window_size,
+        in_channels=in_channels,
+        sigma=sigma,
+        K1=K1,
+        K2=K2,
+        L=L,
+        keep_batch_dim=keep_batch_dim,
+        return_log=return_log,
+    )
+    return ssim_obj(x, y)
