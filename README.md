@@ -102,6 +102,61 @@ assert torch.allclose(ssim_score_0, ssim_score_1)
 print(ssim_score_0.shape, ssim_score_1.shape)
 ```
 
+## As A Loss
+
+![prediction](https://user-images.githubusercontent.com/26847524/174814849-f80ec67c-5397-4ce6-bf4e-8b0aa568ed6f.png)
+
+```python
+import matplotlib.pyplot as plt
+import torch
+from pytorch_ssim import SSIM
+from skimage import data
+from torch.optim import Adam
+
+
+original_image = data.camera() / 255
+target_image = torch.from_numpy(original_image).unsqueeze(0).unsqueeze(0).float().cuda()
+predicted_image = torch.rand_like(
+    target_image, device=target_image.device, dtype=target_image.dtype, requires_grad=True
+)
+initial_image = predicted_image.clone()
+
+ssim = SSIM().cuda()
+initial_ssim_value = ssim(predicted_image, target_image)
+print(f"Initial ssim: {initial_ssim_value.item():.4f}")
+ssim_value = initial_ssim_value
+
+optimizer = Adam([predicted_image], lr=0.01)
+loss_curves = []
+while ssim_value < 0.95:
+    ssim_out = 1 - ssim(predicted_image, target_image)
+    loss_curves.append(ssim_out.item())
+    ssim_value = 1 - ssim_out.item()
+    ssim_out.backward()
+    optimizer.step()
+    optimizer.zero_grad()
+
+fig, axes = plt.subplots(nrows=1, ncols=4, figsize=(8, 2))
+ax = axes.ravel()
+
+ax[0].imshow(original_image, cmap=plt.cm.gray, vmin=0, vmax=1)
+ax[0].set_title("Original Image")
+
+ax[1].imshow(initial_image.squeeze().detach().cpu().numpy(), cmap=plt.cm.gray, vmin=0, vmax=1)
+ax[1].set_xlabel(f"SSIM: {initial_ssim_value:.4f}")
+ax[1].set_title("Initial Image")
+
+ax[2].imshow(predicted_image.squeeze().detach().cpu().numpy(), cmap=plt.cm.gray, vmin=0, vmax=1)
+ax[2].set_xlabel(f"SSIM: {ssim_value:.4f}")
+ax[2].set_title("Predicted Image")
+
+ax[3].plot(loss_curves)
+ax[3].set_title("SSIM Loss Curve")
+
+plt.tight_layout()
+plt.savefig("prediction.png")
+```
+
 ## Reference
 
 - https://github.com/Po-Hsun-Su/pytorch-ssim
