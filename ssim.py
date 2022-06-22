@@ -99,9 +99,10 @@ class SSIM(nn.Module):
         """
         assert x.shape == y.shape, f"x: {x.shape} and y: {y.shape} must be the same"
         assert x.ndim == y.ndim == 4, f"x: {x.ndim} and y: {y.ndim} must be 4"
-        assert (
-            x.type() == y.type() == self.gaussian_filter.gaussian_window2d.type()
-        ), f"x: {x.type()} and y: {y.type()} must be {self.gaussian_filter.gaussian_window2d.type()}"
+        if x.type() != self.gaussian_filter.gaussian_window2d.type():
+            x = x.type_as(self.gaussian_filter.gaussian_window2d)
+        if y.type() != self.gaussian_filter.gaussian_window2d.type():
+            y = y.type_as(self.gaussian_filter.gaussian_window2d)
 
         mu_x = self.gaussian_filter(x)  # equ 14
         mu_y = self.gaussian_filter(y)  # equ 14
@@ -157,5 +158,5 @@ def ssim(
         L=L,
         keep_batch_dim=keep_batch_dim,
         return_log=return_log,
-    )
+    ).to(device=x.device)
     return ssim_obj(x, y)
