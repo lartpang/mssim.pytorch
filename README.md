@@ -8,7 +8,7 @@ s(\mathbf{x}, \mathbf{y}) & = \frac{\sigma_{xy}+C_3}{\sigma_x\sigma_y+C_3}, C_3=
 \text{SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^\alpha \cdot [c(\mathbf{x}, \mathbf{y})]^\beta \cdot [s(\mathbf{x}, \mathbf{y})]^\gamma \\
 & = \frac{(2\mu_x\mu_y+C_1)(2\sigma_{xy}+C_2)}{(\mu_x^2+\mu_y^2+C_1)(\sigma_x^2+\sigma_y^2+C_2)}, \\
 & \alpha=\beta=\gamma=1, \\
-\text{MS-SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^{\alpha \cdot M} \cdot \prod^{M}_{j=1} [c_j(\mathbf{x}, \mathbf{y})]^{\beta_j} \cdot [s_j(\mathbf{x}, \mathbf{y})]^{\gamma_j}, (M=5) \\
+\text{MS-SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^{\alpha_{M}} \cdot \prod^{M}_{j=1} [c_j(\mathbf{x}, \mathbf{y})]^{\beta_j} \cdot [s_j(\mathbf{x}, \mathbf{y})]^{\gamma_j}, (M=5) \\
 & \beta_1=\gamma_1=0.0448, \\
 & \beta_2=\gamma_2=0.2856, \\
 & \beta_3=\gamma_3=0.3001, \\
