@@ -1,4 +1,4 @@
-# MSSIM.pytorch
+# mssim.pytorch
 
 $$
 \begin{align}
@@ -290,3 +290,16 @@ plt.savefig("prediction.png")
 - https://github.com/VainF/pytorch-msssim
 - https://scikit-image.org/docs/dev/auto_examples/transform/plot_ssim.html?highlight=structure+similarity
 - Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, “Image quality assessment: From error visibility to structural similarity,” IEEE Transactions on Image Processing, vol. 13, no. 4, pp. 600-612, Apr. 2004.
+
+## Cite
+
+If you find this library useful, please cite our bibtex:
+
+```bibtex
+@online{mssim.pytorch,
+    author="lartpang",
+    title="{A better pytorch-based implementation for the mean structural similarity. Differentiable simpler SSIM and MS-SSIM.}",
+    url="https://github.com/lartpang/mssim.pytorch",
+    note="(Jun 21, 2022)",
+}
+```
