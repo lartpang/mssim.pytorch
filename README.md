@@ -2,7 +2,7 @@
 
 $$
 \begin{align}
-l(\mathbf{x}, \mathbf{y}) & = \frac{2\mu_x\mu_y+C_1}{\mu_x^2+\mu_y^2+C_1}, C_1=(K_1L)^2, K_1=0.01, \\ 
+l(\mathbf{x}, \mathbf{y}) & = \frac{2\mu_x\mu_y+C_1}{\mu_x^2+\mu_y^2+C_1}, C_1=(K_1L)^2, K_1=0.01, \\
 c(\mathbf{x}, \mathbf{y}) & = \frac{2\sigma_{x}\sigma_{y}+C_2}{\sigma_x^2+\sigma_y^2+C_2}, C_2=(K_2L)^2, K_2=0.02, \\
 s(\mathbf{x}, \mathbf{y}) & = \frac{\sigma_{xy}+C_3}{\sigma_x\sigma_y+C_3}, C_3=C_2/2,  \\
 \text{SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^\alpha \cdot [c(\mathbf{x}, \mathbf{y})]^\beta \cdot [s(\mathbf{x}, \mathbf{y})]^\gamma \\
@@ -23,9 +23,25 @@ Compared to this widely used implementation: <https://github.com/Po-Hsun-Su/pyto
 
 At the same time, in this implementation, I have dealt with the problem that the calculation with the fp16 mode cannot be consistent with the calculation with the fp32 mode. Typecasting is used here to ensure that the computation is done in fp32 mode. This might also avoid unexpected results when using it as a loss.
 
+> [!note]
+> 2024-12-04: SSIM for 1D, 2D and 3D data, and MS-SSIM calculation for 2D and 3D data are now supported simultaneously.
+
+| Setting         | SSIM1d         | SSIM2d                | SSIM3d                       | MS-SSIM2d             | MS-SSIM3d (**only pooling in the spatial domain**) |
+| --------------- | -------------- | --------------------- | ---------------------------- | --------------------- | -------------------------------------------------- |
+| data_dim        | 1              | 2 (Default)           | 3                            | 2                     | 3                                                  |
+| return_msssim   | `False`        | `False`               | `False`                      | `True`                | `True`                                             |
+| window_size     | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
+| padding         | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
+| sigma           | float, [float] | float, [float, float] | float, [float, float, float] | float, [float, float] | float, [float, float, float]                       |
+| in_channels     | int            | int                   | int                          | int                   | int                                                |
+| L               | 1, 255         | 1, 255                | 1, 255                       | 1, 255                | 1, 255                                             |
+| keep_batch_dim  | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
+| return_log      | ✅              | ✅                     | ✅                            | ❌                     | ❌                                                  |
+| ensemble_kernel | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
+
 ## Structural similarity index
 
-> When comparing images, the mean squared error (MSE)–while simple to implement–is not highly indicative of perceived similarity. Structural similarity aims to address this shortcoming by taking texture into account. More details can be seen at https://scikit-image.org/docs/dev/auto_examples/transform/plot_ssim.html?highlight=structure+similarity
+> When comparing images, the mean squared error (MSE)–while simple to implement–is not highly indicative of perceived similarity. Structural similarity aims to address this shortcoming by taking texture into account. More details can be seen at <https://scikit-image.org/docs/dev/auto_examples/transform/plot_ssim.html?highlight=structure+similarity>
 
 ![results](https://user-images.githubusercontent.com/26847524/175031400-92426661-4536-43c7-8f6e-5c470fb9ccb5.png)
 
@@ -286,10 +302,10 @@ plt.savefig("prediction.png")
 
 ## Reference
 
-- https://github.com/Po-Hsun-Su/pytorch-ssim
-- https://github.com/VainF/pytorch-msssim
-- https://scikit-image.org/docs/dev/auto_examples/transform/plot_ssim.html?highlight=structure+similarity
-- Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, “Image quality assessment: From error visibility to structural similarity,” IEEE Transactions on Image Processing, vol. 13, no. 4, pp. 600-612, Apr. 2004.
+* <https://github.com/Po-Hsun-Su/pytorch-ssim>
+* <https://github.com/VainF/pytorch-msssim>
+* <https://scikit-image.org/docs/dev/auto_examples/transform/plot_ssim.html?highlight=structure+similarity>
+* Z. Wang, A. C. Bovik, H. R. Sheikh and E. P. Simoncelli, “Image quality assessment: From error visibility to structural similarity,” IEEE Transactions on Image Processing, vol. 13, no. 4, pp. 600-612, Apr. 2004.
 
 ## Cite
 
