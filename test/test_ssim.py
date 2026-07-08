@@ -70,46 +70,32 @@ class CheckSSIMTestCase(unittest.TestCase):
         self.assertEqual(our_ssim_score, 0.6245790719985962)
 
     def test_ssim2d_with_oldversion(self):
-        kwargs = dict(
-            window_size=11, L=1, keep_batch_dim=False, return_log=False, return_msssim=False, ensemble_kernel=True
-        )
+        kwargs = dict(window_size=11, L=1, return_log=False, return_msssim=False, ensemble_kernel=True)
         old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d).item()
-        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, **kwargs).item()
+        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, reduction="mean", **kwargs).item()
         self.assertEqual(our_ssim_score, old_version_ssim_score)
 
-        kwargs = dict(
-            window_size=5, L=1, keep_batch_dim=False, return_log=False, return_msssim=False, ensemble_kernel=True
-        )
-        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, **kwargs).item()
-        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, **kwargs).item()
+        kwargs = dict(window_size=5, L=1, return_log=False, return_msssim=False, ensemble_kernel=True)
+        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, keep_batch_dim=False, **kwargs).item()
+        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, reduction="mean", **kwargs).item()
+        self.assertEqual(our_ssim_score, old_version_ssim_score)
+        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, keep_batch_dim=True, **kwargs).tolist()
+        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, reduction="batch", **kwargs).tolist()
         self.assertEqual(our_ssim_score, old_version_ssim_score)
 
-        kwargs = dict(
-            window_size=5, L=1, keep_batch_dim=True, return_log=False, return_msssim=False, ensemble_kernel=True
-        )
-        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, **kwargs).tolist()
-        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, **kwargs).tolist()
+        kwargs = dict(window_size=5, L=1, return_log=True, return_msssim=False, ensemble_kernel=True)
+        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, keep_batch_dim=True, **kwargs).tolist()
+        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, reduction="batch", **kwargs).tolist()
         self.assertEqual(our_ssim_score, old_version_ssim_score)
 
-        kwargs = dict(
-            window_size=5, L=1, keep_batch_dim=True, return_log=True, return_msssim=False, ensemble_kernel=True
-        )
-        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, **kwargs).tolist()
-        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, **kwargs).tolist()
+        kwargs = dict(window_size=5, L=1, return_log=False, return_msssim=True, ensemble_kernel=True)
+        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, keep_batch_dim=True, **kwargs).tolist()
+        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, reduction="batch", **kwargs).tolist()
         self.assertEqual(our_ssim_score, old_version_ssim_score)
 
-        kwargs = dict(
-            window_size=5, L=1, keep_batch_dim=True, return_log=False, return_msssim=True, ensemble_kernel=True
-        )
-        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, **kwargs).tolist()
-        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, **kwargs).tolist()
-        self.assertEqual(our_ssim_score, old_version_ssim_score)
-
-        kwargs = dict(
-            window_size=5, L=1, keep_batch_dim=True, return_log=False, return_msssim=True, ensemble_kernel=False
-        )
-        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, **kwargs).tolist()
-        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, **kwargs).tolist()
+        kwargs = dict(window_size=5, L=1, return_log=False, return_msssim=True, ensemble_kernel=False)
+        old_version_ssim_score = old_version.ssim(self.x_2d, self.y_2d, keep_batch_dim=True, **kwargs).tolist()
+        our_ssim_score = ssim.ssim(self.x_2d, self.y_2d, data_dim=2, reduction="batch", **kwargs).tolist()
         self.assertEqual(our_ssim_score, old_version_ssim_score)
 
     def test_ssim2d_with_pohsunsu_method(self):
@@ -156,6 +142,35 @@ class CheckSSIMTestCase(unittest.TestCase):
             self.x_2d, self.y_2d, return_msssim=True, L=1, ensemble_kernel=False, window_size=5, padding=0
         ).item()
         self.assertAlmostEqual(our_ssim_score, vainf_ssim_score)
+
+    def test_ssim2d_half_input_uses_float32_compute(self):
+        metric = ssim.SSIM(L=1, data_dim=2)
+        x_half = self.x_2d.half()
+        y_half = self.y_2d.half()
+
+        expected = metric(x_half.float(), y_half.float())
+        actual = metric(x_half, y_half)
+
+        self.assertEqual(actual.dtype, torch.float32)
+        self.assertTrue(torch.equal(actual, expected))
+
+    def test_ssim2d_cpu_autocast_matches_float32(self):
+        metric = ssim.SSIM(L=1, data_dim=2)
+        expected = metric(self.x_2d, self.y_2d)
+
+        with torch.autocast(device_type="cpu", dtype=torch.bfloat16):
+            actual = metric(self.x_2d, self.y_2d)
+
+        self.assertEqual(actual.dtype, torch.float32)
+        self.assertTrue(torch.equal(actual, expected))
+
+    def test_ssim2d_half_module_still_uses_float32_compute(self):
+        metric = ssim.SSIM(L=1, data_dim=2).half()
+        expected = ssim.SSIM(L=1, data_dim=2)(self.x_2d, self.y_2d)
+        actual = metric(self.x_2d, self.y_2d)
+
+        self.assertEqual(actual.dtype, torch.float32)
+        self.assertTrue(torch.equal(actual, expected))
 
 
 if __name__ == "__main__":

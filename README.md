@@ -3,7 +3,7 @@
 $$
 \begin{align}
 l(\mathbf{x}, \mathbf{y}) & = \frac{2\mu_x\mu_y+C_1}{\mu_x^2+\mu_y^2+C_1}, C_1=(K_1L)^2, K_1=0.01, \\
-c(\mathbf{x}, \mathbf{y}) & = \frac{2\sigma_{x}\sigma_{y}+C_2}{\sigma_x^2+\sigma_y^2+C_2}, C_2=(K_2L)^2, K_2=0.02, \\
+c(\mathbf{x}, \mathbf{y}) & = \frac{2\sigma_{x}\sigma_{y}+C_2}{\sigma_x^2+\sigma_y^2+C_2}, C_2=(K_2L)^2, K_2=0.03, \\
 s(\mathbf{x}, \mathbf{y}) & = \frac{\sigma_{xy}+C_3}{\sigma_x\sigma_y+C_3}, C_3=C_2/2,  \\
 \text{SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^\alpha \cdot [c(\mathbf{x}, \mathbf{y})]^\beta \cdot [s(\mathbf{x}, \mathbf{y})]^\gamma \\
 & = \frac{(2\mu_x\mu_y+C_1)(2\sigma_{xy}+C_2)}{(\mu_x^2+\mu_y^2+C_1)(\sigma_x^2+\sigma_y^2+C_2)}, \\
@@ -26,18 +26,18 @@ At the same time, in this implementation, I have dealt with the problem that the
 > [!note]
 > 2024-12-04: SSIM for 1D, 2D and 3D data, and MS-SSIM calculation for 2D and 3D data are now supported simultaneously.
 
-| Setting         | SSIM1d         | SSIM2d                | SSIM3d                       | MS-SSIM2d             | MS-SSIM3d (**only pooling in the spatial domain**) |
-| --------------- | -------------- | --------------------- | ---------------------------- | --------------------- | -------------------------------------------------- |
-| data_dim        | 1              | 2 (Default)           | 3                            | 2                     | 3                                                  |
-| return_msssim   | `False`        | `False`               | `False`                      | `True`                | `True`                                             |
-| window_size     | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
-| padding         | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
-| sigma           | float, [float] | float, [float, float] | float, [float, float, float] | float, [float, float] | float, [float, float, float]                       |
-| in_channels     | int            | int                   | int                          | int                   | int                                                |
-| L               | 1, 255         | 1, 255                | 1, 255                       | 1, 255                | 1, 255                                             |
-| keep_batch_dim  | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
-| return_log      | ✅              | ✅                     | ✅                            | ❌                     | ❌                                                  |
-| ensemble_kernel | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
+| Setting               | SSIM1d         | SSIM2d                | SSIM3d                       | MS-SSIM2d             | MS-SSIM3d (**only pooling in the spatial domain**) |
+| --------------------- | -------------- | --------------------- | ---------------------------- | --------------------- | -------------------------------------------------- |
+| data_dim              | 1              | 2 (Default)           | 3                            | 2                     | 3                                                  |
+| forward return_msssim | `False`        | `False`               | `False`                      | `True`                | `True`                                             |
+| window_size           | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
+| padding               | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
+| sigma                 | float, [float] | float, [float, float] | float, [float, float, float] | float, [float, float] | float, [float, float, float]                       |
+| in_channels           | int            | int                   | int                          | int                   | int                                                |
+| L                     | 1, 255         | 1, 255                | 1, 255                       | 1, 255                | 1, 255                                             |
+| reduction             | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
+| return_log            | ✅              | ✅                     | ✅                            | ❌                     | ❌                                                  |
+| ensemble_kernel       | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
 
 ## Structural similarity index
 
@@ -86,12 +86,13 @@ vainf_ms_ssim_noise = VainFMSSSIM(channel=1, data_range=1)(img_tensor, img_noise
 vainf_ms_ssim_const = VainFMSSSIM(channel=1, data_range=1)(img_tensor, img_const_tensor)
 
 # use the settings of https://github.com/VainF/pytorch-msssim
-ssim_none_0 = SSIM(return_msssim=False, L=1, padding=0, ensemble_kernel=False)(img_tensor, img_tensor)
-ssim_noise_0 = SSIM(return_msssim=False, L=1, padding=0, ensemble_kernel=False)(img_tensor, img_noise_tensor)
-ssim_const_0 = SSIM(return_msssim=False, L=1, padding=0, ensemble_kernel=False)(img_tensor, img_const_tensor)
-ms_ssim_none_0 = SSIM(return_msssim=True, L=1, padding=0, ensemble_kernel=False)(img_tensor, img_tensor)
-ms_ssim_noise_0 = SSIM(return_msssim=True, L=1, padding=0, ensemble_kernel=False)(img_tensor, img_noise_tensor)
-ms_ssim_const_0 = SSIM(return_msssim=True, L=1, padding=0, ensemble_kernel=False)(img_tensor, img_const_tensor)
+ssim_vainf = SSIM(L=1, padding=0, ensemble_kernel=False)
+ssim_none_0 = ssim_vainf(img_tensor, img_tensor)
+ssim_noise_0 = ssim_vainf(img_tensor, img_noise_tensor)
+ssim_const_0 = ssim_vainf(img_tensor, img_const_tensor)
+ms_ssim_none_0 = ssim_vainf(img_tensor, img_tensor, return_msssim=True)
+ms_ssim_noise_0 = ssim_vainf(img_tensor, img_noise_tensor, return_msssim=True)
+ms_ssim_const_0 = ssim_vainf(img_tensor, img_const_tensor, return_msssim=True)
 
 # https://github.com/Po-Hsun-Su/pytorch-ssim
 pohsunsu_ssim_none = PoHsunSuSSIM()(img_tensor, img_tensor)
@@ -99,9 +100,10 @@ pohsunsu_ssim_noise = PoHsunSuSSIM()(img_tensor, img_noise_tensor)
 pohsunsu_ssim_const = PoHsunSuSSIM()(img_tensor, img_const_tensor)
 
 # use the settings of https://github.com/Po-Hsun-Su/pytorch-ssim
-ssim_none_1 = SSIM(return_msssim=False, L=1, padding=None, ensemble_kernel=True)(img_tensor, img_tensor)
-ssim_noise_1 = SSIM(return_msssim=False, L=1, padding=None, ensemble_kernel=True)(img_tensor, img_noise_tensor)
-ssim_const_1 = SSIM(return_msssim=False, L=1, padding=None, ensemble_kernel=True)(img_tensor, img_const_tensor)
+ssim_pohsunsu = SSIM(L=1, padding=None, ensemble_kernel=True)
+ssim_none_1 = ssim_pohsunsu(img_tensor, img_tensor)
+ssim_noise_1 = ssim_pohsunsu(img_tensor, img_noise_tensor)
+ssim_const_1 = ssim_pohsunsu(img_tensor, img_const_tensor)
 
 
 ax[0].imshow(img, cmap=plt.cm.gray, vmin=0, vmax=1)
@@ -144,8 +146,8 @@ plt.savefig("results.png")
 ## More Examples
 
 ```python
-# setting 4: for 4d float tensors with the data range [0, 1] and 1 channel,return the logarithmic form, and keep the batch dim
-ssim_caller = SSIM(return_log=True, keep_batch_dim=True).cuda()
+# setting 4: for 4d float tensors with the data range [0, 1] and 1 channel, return the logarithmic form per batch item
+ssim_caller = SSIM(return_log=True, reduction="batch").cuda()
 
 # two 4d tensors
 x = torch.randn(3, 1, 100, 100).cuda()
