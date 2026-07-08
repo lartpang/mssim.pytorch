@@ -1,6 +1,7 @@
 import math
 import warnings
 from enum import Enum
+from typing import Tuple
 
 import torch
 import torch.nn as nn
@@ -40,21 +41,64 @@ class Reduction(str, Enum):
         return reduction
 
 
-def _reduce_similarity(value, reduction=None, stable_mean=False):
+def _check_weights(weights, *, name="weights", eps=1e-12):
+    if not isinstance(weights, torch.Tensor):
+        raise TypeError(f"{name} must be a torch.Tensor, but got {type(weights).__name__}.")
+    if weights.ndim == 0:
+        raise ValueError(f"{name} must not be a scalar tensor.")
+    if weights.numel() == 0:
+        raise ValueError(f"{name} must not be empty.")
+    if not torch.isfinite(weights).all():
+        raise ValueError(f"{name} must contain only finite values.")
+    if torch.any(weights < 0):
+        raise ValueError(f"{name} must be nonnegative.")
+    if weights.sum() <= eps:
+        raise ValueError(f"{name} must have a positive sum.")
+
+
+def _reduce_similarity(value, reduction=None, stable_mean=False, weights=None, eps=1e-12):
     mode = Reduction.resolve(reduction)
     if mode is Reduction.NONE:
         return value
     if value.ndim == 0:
+        if weights is not None:
+            warnings.warn("weights do not affect scalar similarity scores.", UserWarning, stacklevel=2)
         return value
+
+    if weights is None:
+        if mode is Reduction.BATCH:
+            if value.ndim == 1:
+                return value
+            return value.flatten(1).mean(-1)
+        if mode is Reduction.SUM:
+            return value.sum()
+        if stable_mean:
+            return value.double().mean().to(dtype=value.dtype)
+        return value.mean()
+
+    if weights.device != value.device:
+        raise ValueError(f"weights and SSIM map must be on the same device, got {weights.device} and {value.device}.")
+    weights = weights.to(dtype=value.dtype)
+    _check_weights(weights, eps=eps)
+    weighted = value * weights
+    weight_map = torch.ones_like(value) * weights
+
     if mode is Reduction.BATCH:
-        if value.ndim == 1:
-            return value
-        return value.flatten(1).mean(-1)
+        dims = tuple(range(1, value.ndim))
+        weight_sum = weight_map.sum(dim=dims)
+        if torch.any(weight_sum <= eps):
+            raise ValueError("weights must have a positive sum for every batch item.")
+        return weighted.sum(dim=dims) / weight_sum
     if mode is Reduction.SUM:
-        return value.sum()
-    if stable_mean:
-        return value.double().mean().to(dtype=value.dtype)
-    return value.mean()
+        weight_sum = weight_map.sum()
+        if weight_sum <= eps:
+            raise ValueError("weights must have a positive sum.")
+        return weighted.sum()
+
+    weight_sum = weight_map.sum()
+    if weight_sum <= eps:
+        raise ValueError("weights must have a positive sum.")
+    return weighted.sum() / weight_sum
 
 
 def _ssim_map(x, y, local_ops, *, C1, C2):
@@ -74,6 +118,27 @@ def _ssim_map(x, y, local_ops, *, C1, C2):
     cs = A2 / B2
     ssim = l * cs
     return ssim, cs
+
+
+class IdentityPreprocess(nn.Module):
+    def __init__(self):
+        super().__init__()
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return x, y
+
+
+class SSIMMapReducer(nn.Module):
+    def __init__(self, reduction=None, stable_mean=False, eps=1e-12):
+        super().__init__()
+        self.reduction = Reduction.coerce(reduction)
+        self.stable_mean = stable_mean
+        self.eps = eps
+
+    def forward(self, score_map, weights=None, ref=None):
+        return _reduce_similarity(
+            score_map, reduction=self.reduction, stable_mean=self.stable_mean, weights=weights, eps=self.eps
+        )
 
 
 class GaussianFilter(nn.Module):
@@ -215,6 +280,10 @@ class SSIM(nn.Module):
         reduction=None,
         padding=None,
         ensemble_kernel=True,
+        nonnegative=False,
+        eps=1e-12,
+        preprocess=None,
+        reducer=None,
     ):
         """Calculate the mean SSIM (MSSIM) between two 4D tensors.
 
@@ -230,6 +299,10 @@ class SSIM(nn.Module):
             reduction (str, optional): Reduction mode, one of None, "mean", "sum", "batch", "none".
             padding (int or Tuple[int], optional): The padding of the gaussian filter. Defaults to None. If it is set to None, the filter will use window_size//2 as the padding. Another common setting is 0.
             ensemble_kernel (bool, optional): Whether to fuse the two cascaded 1d kernel into a 2d kernel. Defaults to True.
+            nonnegative (bool, optional): Whether to clamp SSIM/CS maps to nonnegative values. Defaults to False.
+            eps (float, optional): Positive-sum threshold for weighted pooling. Defaults to 1e-12.
+            preprocess (nn.Module, optional): Pairwise preprocessing module applied before SSIM core computation.
+            reducer (nn.Module, optional): SSIM map reduction module. Defaults to standard/weighted reduction.
 
         ```
             # setting 0: for 4d float tensors with the data range [0, 1] and 1 channel
@@ -264,6 +337,7 @@ class SSIM(nn.Module):
         self.window_size = window_size
         self.return_log = return_log
         self.reduction = Reduction.coerce(reduction)
+        self.nonnegative = nonnegative
 
         gaussian_filter = GaussianFilter(
             data_dim=self.data_dim,
@@ -274,14 +348,33 @@ class SSIM(nn.Module):
             ensemble_kernel=ensemble_kernel,
         )
         self.core = SSIMCore(filter=gaussian_filter, K1=K1, K2=K2, L=L)
+        self.preprocess = preprocess if preprocess is not None else IdentityPreprocess()
+        self.reducer = (
+            reducer
+            if reducer is not None
+            else SSIMMapReducer(
+                self.reduction,
+                stable_mean=self.data_dim == 3,
+                eps=eps,
+            )
+        )
+
+    def _check_input_pair(self, x, y):
+        if x.shape != y.shape:
+            raise ValueError(f"x: {x.shape} and y: {y.shape} must be the same")
+        if x.ndim != self.data_dim + 2:
+            raise ValueError(f"x: {x.ndim} and y: {y.ndim} must be {self.data_dim + 2}d tensors")
+        if x.device != y.device:
+            raise RuntimeError(f"x and y must be on the same device, got {x.device} and {y.device}.")
 
     @torch.cuda.amp.autocast(enabled=False)
-    def forward(self, x, y, return_msssim=False):
+    def forward(self, x, y, weights=None, return_msssim=False):
         """Calculate the mean SSIM (MSSIM) between two 3d/4d/5d tensors.
 
         Args:
             x (Tensor): 3d/4d/5d tensor
             y (Tensor): 3d/4d/5d tensor
+            weights (Tensor, optional): Optional nonnegative pooling weights for SSIM maps.
             return_msssim (bool, optional): Whether to return the MS-SSIM score. Defaults to False, which will return the original MSSIM score.
 
         Returns:
@@ -292,8 +385,7 @@ class SSIM(nn.Module):
         if return_msssim and self.data_dim < 2:
             raise ValueError("return_msssim only support data_dim>=2")
         with torch.autocast(device_type=x.device.type, enabled=False):
-            assert x.shape == y.shape, f"x: {x.shape} and y: {y.shape} must be the same"
-            assert x.ndim == self.data_dim + 2, f"x: {x.ndim} and y: {y.ndim} must be {self.data_dim + 2}d tensors"
+            self._check_input_pair(x, y)
 
             ref = self.core.filter.gaussian_window
             if x.device != ref.device or y.device != ref.device:
@@ -302,28 +394,35 @@ class SSIM(nn.Module):
                     f"Got module device {ref.device}, x device {x.device}, and y device {y.device}. "
                     "Move the module explicitly with `.to(device)` before calling forward."
                 )
-            if x.device != y.device:
-                raise RuntimeError(f"x and y must be on the same device, got {x.device} and {y.device}.")
 
             if x.dtype != torch.float32:
                 x = x.float()
             if y.dtype != torch.float32:
                 y = y.float()
 
+            ref = x
+            x, y = self.preprocess(x, y)
+            self._check_input_pair(x, y)
+
             if return_msssim:
+                if weights is not None:
+                    raise ValueError("weights are only supported for SSIM, not MS-SSIM.")
                 return self.msssim(x, y)
             else:
-                return self.ssim(x, y)
+                return self.ssim(x, y, weights=weights, ref=ref)
 
-    def ssim(self, x, y):
+    def ssim(self, x, y, weights=None, ref=None):
         ssim, _ = self.core(x, y)
+        if self.nonnegative:
+            ssim = torch.relu(ssim)
         if self.return_log:
             # https://github.com/xuebinqin/BASNet/blob/56393818e239fed5a81d06d2a1abfe02af33e461/pytorch_ssim/__init__.py#L81-L83
             ssim = ssim - ssim.min()
-            ssim = ssim / ssim.max()
+            # Avoid division by zero when the whole map is constant after shifting.
+            ssim = ssim / ssim.max().clamp_min(1e-12)
             ssim = -torch.log(ssim + 1e-8)
 
-        return _reduce_similarity(ssim, reduction=self.reduction, stable_mean=self.data_dim == 3)
+        return self.reducer(ssim, weights=weights, ref=ref)
 
     def msssim(self, x, y):
         ms_components = []
@@ -333,6 +432,9 @@ class SSIM(nn.Module):
 
             ssim = _reduce_similarity(ssim, reduction=component_reduction)
             cs = _reduce_similarity(cs, reduction=component_reduction)
+            if self.nonnegative:
+                ssim = torch.relu(ssim)
+                cs = torch.relu(cs)
 
             if i == 4:
                 ms_components.append(ssim**w)
@@ -353,9 +455,322 @@ class SSIM(nn.Module):
         return _reduce_similarity(msssim, reduction=self.reduction)
 
 
+class MSSSIM(SSIM):
+    """MS-SSIM module using the same initialization parameters as vanilla SSIM."""
+
+    def forward(self, x, y):
+        return super().forward(x, y, return_msssim=True)
+
+
+class WeightedSSIM(SSIM):
+    """Weighted/ROI SSIM module.
+
+    This variant reuses the vanilla SSIM core and only changes the reduction stage.
+    The forward method requires a nonnegative weight map that is broadcastable to the SSIM map.
+    All initialization parameters are inherited from :class:`SSIM`, including ``return_log``, ``reduction`` and ``eps``.
+    """
+
+    def forward(self, x, y, weights):
+        return super().forward(x, y, weights=weights)
+
+
+class SobelFilter(nn.Module):
+    """Depthwise Sobel magnitude filter for 2D gradient-based variants.
+
+    The filter stores a single-channel Sobel kernel as buffers and repeats it per input channel at call time so every channel is processed independently.
+    ``eps`` controls the minimum squared magnitude before taking the square root, which keeps the gradient magnitude finite around flat regions.
+    """
+
+    def __init__(self, eps=1e-12):
+        super().__init__()
+        self.eps = eps
+        sobel_x = torch.tensor([[-1.0, 0.0, 1.0], [-2.0, 0.0, 2.0], [-1.0, 0.0, 1.0]])
+        self.register_buffer("sobel_x", sobel_x.reshape(1, 1, 3, 3))
+        self.register_buffer("sobel_y", self.sobel_x.transpose(-1, -2).contiguous())
+
+    def forward(self, x):
+        if x.ndim != 4:
+            raise ValueError(f"gradient_ssim only supports 4d tensors, but got {x.ndim}d tensor.")
+        if self.sobel_x.device != x.device:
+            raise RuntimeError(
+                "SobelFilter module buffers and input tensors must be on the same device. "
+                f"Got module device {self.sobel_x.device} and input device {x.device}."
+            )
+
+        channels = x.shape[1]
+        sobel_x = self.sobel_x.to(dtype=x.dtype).repeat_interleave(repeats=channels, dim=0)
+        sobel_y = self.sobel_y.to(dtype=x.dtype).repeat_interleave(repeats=channels, dim=0)
+        grad_x = F.conv2d(x, sobel_x, padding=1, groups=channels)
+        grad_y = F.conv2d(x, sobel_y, padding=1, groups=channels)
+        squared_magnitude = grad_x * grad_x + grad_y * grad_y
+
+        if self.eps > 0:
+            # Avoid sqrt(0) around flat regions while keeping the floor in squared units.
+            squared_magnitude = squared_magnitude.clamp_min(self.eps * self.eps)
+        return torch.sqrt(squared_magnitude)
+
+
+class GradientSSIMPreprocess(nn.Module):
+    """Pairwise preprocessing module for GradientSSIM.
+
+    It converts each input image to Sobel gradient magnitude before the shared SSIM core computes the local structural similarity map.
+    """
+
+    def __init__(self, eps=1e-12):
+        super().__init__()
+        self.gradient_filter = SobelFilter(eps=eps)
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
+        return self.gradient_filter(x), self.gradient_filter(y)
+
+
+class GradientSSIM(SSIM):
+    """Gradient-based SSIM module.
+
+    GradientSSIM applies a Sobel-magnitude preprocessing step and then reuses the same SSIM core and reducer as vanilla SSIM.
+    It is limited to 2D tensors because the Sobel preprocessing implemented here is 2D-only.
+
+    Args:
+        window_size (int or Tuple[int], optional): Gaussian window size. Defaults to 11.
+        in_channels (int, optional): Number of input channels. Defaults to 1.
+        sigma (float or Tuple[float], optional): Gaussian sigma. Defaults to 1.5.
+        K1 (float, optional): K1 of SSIM. Defaults to 0.01.
+        K2 (float, optional): K2 of SSIM. Defaults to 0.03.
+        L (int, optional): Dynamic range of the input values. Defaults to 1.
+        padding (int or Tuple[int], optional): Gaussian padding. Defaults to None.
+        ensemble_kernel (bool, optional): Whether to fuse Gaussian kernels. Defaults to True.
+        reduction (str, optional): Reduction mode, one of None, "mean", "sum", "batch", "none".
+        nonnegative (bool, optional): Whether to clamp SSIM maps to nonnegative values. Defaults to False.
+        eps (float, optional): Shared threshold for Sobel magnitude and weighted reduction. Defaults to 1e-12.
+    """
+
+    def __init__(
+        self,
+        window_size=11,
+        in_channels=1,
+        sigma=1.5,
+        *,
+        K1=0.01,
+        K2=0.03,
+        L=1,
+        padding=None,
+        ensemble_kernel=True,
+        reduction=None,
+        nonnegative=False,
+        eps=1e-12,
+    ):
+        super().__init__(
+            window_size=window_size,
+            in_channels=in_channels,
+            sigma=sigma,
+            K1=K1,
+            K2=K2,
+            L=L,
+            data_dim=2,
+            return_log=False,
+            reduction=reduction,
+            padding=padding,
+            ensemble_kernel=ensemble_kernel,
+            nonnegative=nonnegative,
+            eps=eps,
+            preprocess=GradientSSIMPreprocess(eps=eps),
+        )
+
+
+class ThreeSSIMReducer(nn.Module):
+    """Reducer for Three-Component Structural Similarity.
+
+    The reducer builds edge, texture and smooth masks from the reference image, computes one pooled SSIM score for each nonempty region, and combines the active regions with normalized region weights.
+    This keeps 3-SSIM as a reducer over the shared SSIM map instead of duplicating SSIM computation.
+
+    Args:
+        region_weights (Sequence[float], optional): Weights for edge, texture and smooth regions. Defaults to (0.5, 0.25, 0.25).
+        edge_sigma (float, optional): Gradient threshold multiplier for edge masks. Defaults to 1.0.
+        texture_sigma (float, optional): Local variance threshold multiplier for texture masks. Defaults to 0.0.
+        variance_window_size (int, optional): Odd local window for variance estimation. Defaults to 7.
+        reduction (str, optional): Reduction mode, one of None, "mean", "sum", "batch", "none".
+        eps (float, optional): Positive-sum threshold used during normalization. Defaults to 1e-12.
+    """
+
+    def __init__(
+        self,
+        region_weights=(0.5, 0.25, 0.25),
+        edge_sigma=1.0,
+        texture_sigma=0.0,
+        variance_window_size=7,
+        reduction=None,
+        eps=1e-12,
+    ):
+        super().__init__()
+        if region_weights is None:
+            region_weights = (0.5, 0.25, 0.25)
+        region_weights = torch.as_tensor(region_weights)
+        _check_weights(region_weights, name="region_weights", eps=eps)
+        if region_weights.numel() != 3:
+            raise ValueError(
+                f"region_weights must contain 3 values for edge/texture/smooth regions, got {region_weights.numel()}."
+            )
+        self.region_weights = region_weights
+        self.gradient_filter = SobelFilter(eps=eps)
+
+        self.edge_sigma = edge_sigma
+        self.texture_sigma = texture_sigma
+        if variance_window_size % 2 != 1:
+            raise ValueError(f"variance_window_size must be odd, but got {variance_window_size}.")
+        self.variance_window_size = variance_window_size
+
+        self.reduction = Reduction.coerce(reduction)
+        self.eps = eps
+
+    @staticmethod
+    def _center_crop_like(x, like):
+        target_h, target_w = like.shape[-2:]
+        if x.shape[-2:] == (target_h, target_w):
+            return x
+        if x.size(-2) < target_h or x.size(-1) < target_w:
+            raise ValueError(f"Cannot crop tensor with shape {x.shape} to match {like.shape}.")
+
+        start_h = (x.size(-2) - target_h) // 2
+        start_w = (x.size(-1) - target_w) // 2
+        return x[..., start_h : start_h + target_h, start_w : start_w + target_w]
+
+    @torch.no_grad()
+    def _masks(self, ref):
+        # Region masks are structural labels inferred from the reference image; they should not introduce gradients into the metric.
+        gray = ref.mean(dim=1, keepdim=True)
+        grad = self.gradient_filter(gray)
+
+        local_mean = F.avg_pool2d(
+            gray,
+            kernel_size=self.variance_window_size,
+            stride=1,
+            padding=self.variance_window_size // 2,
+        )
+        local_second = F.avg_pool2d(
+            gray.square(),
+            kernel_size=self.variance_window_size,
+            stride=1,
+            padding=self.variance_window_size // 2,
+        )
+        # Numerical variance can be slightly negative because of floating point cancellation.
+        local_variance = (local_second - local_mean.square()).clamp_min(0)
+
+        flat_grad = grad.flatten(1)
+        flat_var = local_variance.flatten(1)
+
+        grad_threshold = flat_grad.mean(dim=1, keepdim=True) + self.edge_sigma * flat_grad.std(dim=1, keepdim=True)
+        var_threshold = flat_var.mean(dim=1, keepdim=True) + self.texture_sigma * flat_var.std(dim=1, keepdim=True)
+        grad_threshold = grad_threshold.reshape(-1, 1, 1, 1)
+        var_threshold = var_threshold.reshape(-1, 1, 1, 1)
+
+        edge = grad >= grad_threshold
+        texture = (grad < grad_threshold) & (local_variance >= var_threshold)
+        smooth = ~(edge | texture)
+        return edge.float(), texture.float(), smooth.float()
+
+    def forward(self, score_map, weights=None, ref=None):
+        if weights is not None:
+            raise ValueError("ThreeSSIMReducer infers its own weights from edge/texture/smooth regions.")
+        if ref is None:
+            raise ValueError("ThreeSSIMReducer requires ref to infer edge/texture/smooth masks.")
+        masks = self._masks(ref)
+
+        region_weights = torch.as_tensor(self.region_weights, device=score_map.device, dtype=score_map.dtype)
+        _check_weights(region_weights, name="region_weights", eps=self.eps)
+
+        dims = tuple(range(1, score_map.ndim))
+        weight_map = torch.zeros_like(score_map)
+        active_weight_sum = score_map.new_zeros((score_map.shape[0],) + (1,) * (score_map.ndim - 1))
+        for mask, region_weight in zip(masks, region_weights):
+            mask = self._center_crop_like(mask, score_map).to(device=score_map.device, dtype=score_map.dtype)
+            # Broadcast single-channel region masks across the SSIM map channels.
+            mask = torch.broadcast_to(mask, score_map.shape)
+            mask_sum = mask.sum(dim=dims, keepdim=True)
+            active = mask_sum > self.eps
+            active_weight = region_weight * active.to(dtype=score_map.dtype)
+            # Empty regions are ignored.
+            # Nonempty regions are normalized by area first, then weighted by their region weight.
+            weight_map = weight_map + active_weight * mask / mask_sum.clamp_min(self.eps)
+            active_weight_sum = active_weight_sum + active_weight
+        # Re-normalize when one of edge/texture/smooth is absent for a batch item.
+        weights = weight_map / active_weight_sum.clamp_min(self.eps)
+
+        return _reduce_similarity(score_map, reduction=self.reduction, weights=weights, eps=self.eps)
+
+
+class ThreeSSIM(SSIM):
+    """Three-Component Structural Similarity module.
+
+    ThreeSSIM keeps the vanilla SSIM preprocessing and core computation, then replaces the reducer with :class:`ThreeSSIMReducer`.
+    The reducer infers edge, texture and smooth masks from the reference input and pools the SSIM map by these automatically generated regions.
+
+    Args:
+        window_size (int or Tuple[int], optional): Gaussian window size. Defaults to 11.
+        in_channels (int, optional): Number of input channels. Defaults to 1.
+        sigma (float or Tuple[float], optional): Gaussian sigma. Defaults to 1.5.
+        region_weights (Sequence[float], optional): Weights for edge, texture and smooth regions.
+        edge_sigma (float, optional): Gradient threshold multiplier for edge masks. Defaults to 1.0.
+        texture_sigma (float, optional): Variance threshold multiplier for texture masks. Defaults to 0.0.
+        variance_window_size (int, optional): Odd local window for variance estimation. Defaults to 7.
+        K1 (float, optional): K1 of SSIM. Defaults to 0.01.
+        K2 (float, optional): K2 of SSIM. Defaults to 0.03.
+        L (int, optional): Dynamic range of the input values. Defaults to 1.
+        data_dim (int, optional): Data dimension. Currently expected to be 2. Defaults to 2.
+        padding (int or Tuple[int], optional): Gaussian padding. Defaults to None.
+        ensemble_kernel (bool, optional): Whether to fuse Gaussian kernels. Defaults to True.
+        reduction (str, optional): Reduction mode, one of None, "mean", "sum", "batch", "none".
+        nonnegative (bool, optional): Whether to clamp SSIM maps to nonnegative values. Defaults to False.
+        eps (float, optional): Positive-sum threshold used during region pooling. Defaults to 1e-12.
+    """
+
+    def __init__(
+        self,
+        window_size=11,
+        in_channels=1,
+        sigma=1.5,
+        *,
+        region_weights=None,
+        edge_sigma=1.0,
+        texture_sigma=0.0,
+        variance_window_size=7,
+        K1=0.01,
+        K2=0.03,
+        L=1,
+        data_dim=2,
+        padding=None,
+        ensemble_kernel=True,
+        reduction=None,
+        nonnegative=False,
+        eps=1e-12,
+    ):
+        super().__init__(
+            window_size=window_size,
+            in_channels=in_channels,
+            sigma=sigma,
+            K1=K1,
+            K2=K2,
+            L=L,
+            data_dim=data_dim,
+            return_log=False,
+            reduction=reduction,
+            padding=padding,
+            ensemble_kernel=ensemble_kernel,
+            nonnegative=nonnegative,
+            reducer=ThreeSSIMReducer(
+                region_weights=region_weights,
+                edge_sigma=edge_sigma,
+                texture_sigma=texture_sigma,
+                variance_window_size=variance_window_size,
+                reduction=reduction,
+                eps=eps,
+            ),
+        )
+
+
 def ssim(
     x,
     y,
+    weights=None,
     *,
     window_size=11,
     in_channels=1,
@@ -369,12 +784,15 @@ def ssim(
     reduction=None,
     padding=None,
     ensemble_kernel=True,
+    nonnegative=False,
+    eps=1e-12,
 ):
     """Calculate the mean SSIM (MSSIM) between two 4D tensors.
 
     Args:
         x (Tensor): 4d tensor
         y (Tensor): 4d tensor
+        weights (Tensor, optional): Optional nonnegative pooling weights broadcastable to the SSIM map.
         window_size (int or Tuple[int], optional): The window size of the gaussian filter. Defaults to 11.
         in_channels (int, optional): The number of channels of the 4d tensor. Defaults to False.
         sigma (float or Tuple[float], optional): The sigma of the gaussian filter. Defaults to 1.5.
@@ -387,6 +805,8 @@ def ssim(
         reduction (str, optional): Reduction mode, one of None, "mean", "sum", "batch", "none".
         padding (int or Tuple[int], optional): The padding of the gaussian filter. Defaults to None. If it is set to None, the filter will use window_size//2 as the padding. Another common setting is 0.
         ensemble_kernel (bool, optional): Whether to fuse the two cascaded 1d kernel into a 2d kernel. Defaults to True.
+        nonnegative (bool, optional): Whether to clamp SSIM/CS maps to nonnegative values. Defaults to False.
+        eps (float, optional): Positive-sum threshold for weighted pooling. Defaults to 1e-12.
 
     Returns:
         Tensor: MSSIM or MS-SSIM
@@ -403,5 +823,156 @@ def ssim(
         reduction=reduction,
         padding=padding,
         ensemble_kernel=ensemble_kernel,
+        nonnegative=nonnegative,
+        eps=eps,
     ).to(device=x.device)
-    return ssim_obj(x, y, return_msssim=return_msssim)
+    return ssim_obj(x, y, weights=weights, return_msssim=return_msssim)
+
+
+def ms_ssim(
+    x,
+    y,
+    *,
+    window_size=11,
+    in_channels=1,
+    sigma=1.5,
+    K1=0.01,
+    K2=0.03,
+    L=1,
+    data_dim=2,
+    reduction=None,
+    padding=None,
+    ensemble_kernel=True,
+    nonnegative=False,
+):
+    """Calculate the Multi-Scale Structural Similarity (MS-SSIM) score."""
+    metric = SSIM(
+        window_size=window_size,
+        in_channels=in_channels,
+        sigma=sigma,
+        K1=K1,
+        K2=K2,
+        L=L,
+        data_dim=data_dim,
+        reduction=reduction,
+        padding=padding,
+        ensemble_kernel=ensemble_kernel,
+        nonnegative=nonnegative,
+    ).to(device=x.device)
+    return metric(x, y, return_msssim=True)
+
+
+def weighted_ssim(
+    x,
+    y,
+    weights,
+    *,
+    window_size=11,
+    in_channels=1,
+    sigma=1.5,
+    K1=0.01,
+    K2=0.03,
+    L=1,
+    data_dim=2,
+    return_log=False,
+    reduction=None,
+    padding=None,
+    ensemble_kernel=True,
+    nonnegative=False,
+    eps=1e-12,
+):
+    """Calculate a Weighted/ROI Structural Similarity score from the SSIM map."""
+    metric = WeightedSSIM(
+        window_size=window_size,
+        in_channels=in_channels,
+        sigma=sigma,
+        K1=K1,
+        K2=K2,
+        L=L,
+        data_dim=data_dim,
+        return_log=return_log,
+        reduction=reduction,
+        padding=padding,
+        ensemble_kernel=ensemble_kernel,
+        nonnegative=nonnegative,
+        eps=eps,
+    ).to(device=x.device)
+    return metric(x, y, weights)
+
+
+def gradient_ssim(
+    x,
+    y,
+    *,
+    window_size=11,
+    in_channels=None,
+    sigma=1.5,
+    K1=0.01,
+    K2=0.03,
+    L=1,
+    reduction=None,
+    padding=None,
+    ensemble_kernel=True,
+    nonnegative=False,
+    eps=1e-12,
+):
+    """Calculate Gradient-based Structural Similarity on Sobel magnitude maps."""
+    if in_channels is None:
+        in_channels = x.shape[1]
+    metric = GradientSSIM(
+        window_size=window_size,
+        in_channels=in_channels,
+        sigma=sigma,
+        K1=K1,
+        K2=K2,
+        L=L,
+        reduction=reduction,
+        padding=padding,
+        ensemble_kernel=ensemble_kernel,
+        nonnegative=nonnegative,
+        eps=eps,
+    ).to(device=x.device)
+    return metric(x, y)
+
+
+def three_ssim(
+    x,
+    y,
+    *,
+    region_weights=None,
+    edge_sigma=1.0,
+    texture_sigma=0.0,
+    variance_window_size=7,
+    window_size=11,
+    in_channels=1,
+    sigma=1.5,
+    K1=0.01,
+    K2=0.03,
+    L=1,
+    data_dim=2,
+    reduction=None,
+    padding=None,
+    ensemble_kernel=True,
+    nonnegative=False,
+    eps=1e-12,
+):
+    """Calculate Three-Component Structural Similarity (3-SSIM)."""
+    metric = ThreeSSIM(
+        window_size=window_size,
+        in_channels=in_channels,
+        sigma=sigma,
+        region_weights=region_weights,
+        edge_sigma=edge_sigma,
+        texture_sigma=texture_sigma,
+        variance_window_size=variance_window_size,
+        K1=K1,
+        K2=K2,
+        L=L,
+        data_dim=data_dim,
+        reduction=reduction,
+        padding=padding,
+        ensemble_kernel=ensemble_kernel,
+        nonnegative=nonnegative,
+        eps=eps,
+    ).to(device=x.device)
+    return metric(x, y)

@@ -1,19 +1,56 @@
 # mssim.pytorch
 
+SSIM:
+
 $$
 \begin{align}
-l(\mathbf{x}, \mathbf{y}) & = \frac{2\mu_x\mu_y+C_1}{\mu_x^2+\mu_y^2+C_1}, C_1=(K_1L)^2, K_1=0.01, \\
-c(\mathbf{x}, \mathbf{y}) & = \frac{2\sigma_{x}\sigma_{y}+C_2}{\sigma_x^2+\sigma_y^2+C_2}, C_2=(K_2L)^2, K_2=0.03, \\
-s(\mathbf{x}, \mathbf{y}) & = \frac{\sigma_{xy}+C_3}{\sigma_x\sigma_y+C_3}, C_3=C_2/2,  \\
-\text{SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^\alpha \cdot [c(\mathbf{x}, \mathbf{y})]^\beta \cdot [s(\mathbf{x}, \mathbf{y})]^\gamma \\
-& = \frac{(2\mu_x\mu_y+C_1)(2\sigma_{xy}+C_2)}{(\mu_x^2+\mu_y^2+C_1)(\sigma_x^2+\sigma_y^2+C_2)}, \\
-& \alpha=\beta=\gamma=1, \\
-\text{MS-SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^{\alpha_{M}} \cdot \prod^{M}_{j=1} [c_j(\mathbf{x}, \mathbf{y})]^{\beta_j} \cdot [s_j(\mathbf{x}, \mathbf{y})]^{\gamma_j}, (M=5) \\
+l(\mathbf{x}, \mathbf{y}) & = \frac{2\mu_x\mu_y+C_1}{\mu_x^2+\mu_y^2+C_1}, \quad C_1=(K_1L)^2, K_1=0.01, \\
+c(\mathbf{x}, \mathbf{y}) & = \frac{2\sigma_{x}\sigma_{y}+C_2}{\sigma_x^2+\sigma_y^2+C_2}, \quad C_2=(K_2L)^2, K_2=0.03, \\
+s(\mathbf{x}, \mathbf{y}) & = \frac{\sigma_{xy}+C_3}{\sigma_x\sigma_y+C_3}, \quad C_3=C_2/2,  \\
+\text{SSIM}(\mathbf{x}, \mathbf{y})
+& = [l(\mathbf{x}, \mathbf{y})]^\alpha \cdot [c(\mathbf{x}, \mathbf{y})]^\beta \cdot [s(\mathbf{x}, \mathbf{y})]^\gamma \\
+& = \frac{(2\mu_x\mu_y+C_1)(2\sigma_{xy}+C_2)}{(\mu_x^2+\mu_y^2+C_1)(\sigma_x^2+\sigma_y^2+C_2)} \\
+& \alpha=\beta=\gamma=1.
+\end{align}
+$$
+
+Multi Scale SSIM:
+
+$$
+\begin{align}
+\text{MS-SSIM}(\mathbf{x}, \mathbf{y}) & = [l(\mathbf{x}, \mathbf{y})]^{\alpha_{M}} \cdot \prod^{M}_{j=1} [c_j(\mathbf{x}, \mathbf{y})]^{\beta_j} \cdot [s_j(\mathbf{x}, \mathbf{y})]^{\gamma_j}, \\
+(M=5) \Rightarrow
 & \beta_1=\gamma_1=0.0448, \\
 & \beta_2=\gamma_2=0.2856, \\
 & \beta_3=\gamma_3=0.3001, \\
 & \beta_4=\gamma_4=0.2363, \\
 & \alpha_5=\beta_5=\gamma_5=0.1333.
+\end{align}
+$$
+
+Weighted/ROI SSIM:
+
+$$
+\begin{align}
+\text{WeightedSSIM}_{\mathbf{w}}(\mathbf{x}, \mathbf{y}) & = \frac{\sum_i w_i\text{SSIM}_i(\mathbf{x}, \mathbf{y})}{\sum_i w_i}.
+\end{align}
+$$
+
+Gradient-based SSIM:
+
+$$
+\begin{align}
+\nabla_h\mathbf{x} & = \sqrt{(\mathbf{x}*h_x)^2+(\mathbf{x}*h_y)^2}, \\
+\text{GradientSSIM}(\mathbf{x}, \mathbf{y}) & = \text{SSIM}(\nabla_h\mathbf{x}, \nabla_h\mathbf{y}).
+\end{align}
+$$
+
+Three-Component Structural Similarity (3-SSIM):
+
+$$
+\begin{align}
+\text{ThreeSSIM}(\mathbf{x}, \mathbf{y}) & = \sum_{r\in \{\text{edge}, \text{texture}, \text{smooth}\} }\lambda_r\frac{\sum_i m_{ri}\text{SSIM}_i(\mathbf{x}, \mathbf{y})}{\sum_i m_{ri}}, \\
+& \lambda_\text{edge}=0.5, \quad \lambda_\text{texture}=0.25, \quad \lambda_\text{smooth}=0.25.
 \end{align}
 $$
 
@@ -25,19 +62,64 @@ At the same time, in this implementation, I have dealt with the problem that the
 
 > [!note]
 > 2024-12-04: SSIM for 1D, 2D and 3D data, and MS-SSIM calculation for 2D and 3D data are now supported simultaneously.
+> 2026-07-08: Weighted/ROI SSIM, Gradient-based SSIM, and Three-Component SSIM are now supported through the same composable SSIM core.
 
-| Setting               | SSIM1d         | SSIM2d                | SSIM3d                       | MS-SSIM2d             | MS-SSIM3d (**only pooling in the spatial domain**) |
-| --------------------- | -------------- | --------------------- | ---------------------------- | --------------------- | -------------------------------------------------- |
-| data_dim              | 1              | 2 (Default)           | 3                            | 2                     | 3                                                  |
-| forward return_msssim | `False`        | `False`               | `False`                      | `True`                | `True`                                             |
-| window_size           | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
-| padding               | int, [int]     | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               |
-| sigma                 | float, [float] | float, [float, float] | float, [float, float, float] | float, [float, float] | float, [float, float, float]                       |
-| in_channels           | int            | int                   | int                          | int                   | int                                                |
-| L                     | 1, 255         | 1, 255                | 1, 255                       | 1, 255                | 1, 255                                             |
-| reduction             | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
-| return_log            | ✅              | ✅                     | ✅                            | ❌                     | ❌                                                  |
-| ensemble_kernel       | ✅              | ✅                     | ✅                            | ✅                     | ✅                                                  |
+| Setting               | SSIM1d               | SSIM2d                | SSIM3d                       | MS-SSIM2d             | MS-SSIM3d (**only pooling in the spatial domain**) | WeightedSSIM               | GradientSSIM          | ThreeSSIM             |
+| --------------------- | -------------------- | --------------------- | ---------------------------- | --------------------- | -------------------------------------------------- | -------------------------- | --------------------- | --------------------- |
+| data_dim              | 1                    | 2 (Default)           | 3                            | 2                     | 3                                                  | 1, 2 (Default), 3          | 2                     | 2                     |
+| forward return_msssim | `False`              | `False`               | `False`                      | `True`                | `True`                                             | `False`                    | `False`               | `False`               |
+| window_size           | int, [int]           | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               | int, [int] by data_dim     | int, [int, int]       | int, [int, int]       |
+| padding               | int, [int]           | int, [int, int]       | int, [int, int, int]         | int, [int, int]       | int, [int, int, int]                               | int, [int] by data_dim     | int, [int, int]       | int, [int, int]       |
+| sigma                 | float, [float]       | float, [float, float] | float, [float, float, float] | float, [float, float] | float, [float, float, float]                       | float, [float] by data_dim | float, [float, float] | float, [float, float] |
+| in_channels           | int                  | int                   | int                          | int                   | int                                                | int                        | int                   | int                   |
+| L                     | 1, 255               | 1, 255                | 1, 255                       | 1, 255                | 1, 255                                             | 1, 255                     | 1, 255                | 1, 255                |
+| reduction             | ✅                    | ✅                     | ✅                            | ✅                     | ✅                                                  | ✅                          | ✅                     | ✅                     |
+| return_log            | ✅                    | ✅                     | ✅                            | ❌                     | ❌                                                  | ✅                          | ❌                     | ❌                     |
+| ensemble_kernel       | ✅                    | ✅                     | ✅                            | ✅                     | ✅                                                  | ✅                          | ✅                     | ✅                     |
+| weights               | optional             | optional              | optional                     | ❌                     | ❌                                                  | required                   | ❌                     | auto region masks     |
+| eps                   | optional for weights | optional for weights  | optional for weights         | ❌                     | ❌                                                  | ✅                          | ✅                     | ✅                     |
+
+## Current API
+
+The SSIM family now uses a composable internal pipeline:
+`preprocess -> SSIMCore -> reducer`.
+- Standard SSIM uses
+`IdentityPreprocess` and `SSIMMapReducer`;
+- `GradientSSIM` swaps in
+`GradientSSIMPreprocess`;
+- `ThreeSSIM` swaps in `ThreeSSIMReducer`.
+
+This keeps the local SSIM map computation shared and makes new variants additive instead of duplicating the whole metric.
+
+```python
+from ssim import (
+    SSIM,
+    MSSSIM,
+    WeightedSSIM,
+    GradientSSIM,
+    ThreeSSIM,
+    ssim,
+    ms_ssim,
+    weighted_ssim,
+    gradient_ssim,
+    three_ssim,
+)
+```
+
+| Group                                          | Functional API                            | Module API                                     |
+| ---------------------------------------------- | ----------------------------------------- | ---------------------------------------------- |
+| SSIM / Multi-Scale SSIM                        | `ssim`, `ms_ssim`                         | `SSIM`, `MSSSIM`                               |
+| Weighted/ROI SSIM                              | `ssim(..., weights=...)`, `weighted_ssim` | `SSIM(...)(x, y, weights=...)`, `WeightedSSIM` |
+| Gradient-based SSIM                            | `gradient_ssim`                           | `GradientSSIM`                                 |
+| Three-Component Structural Similarity (3-SSIM) | `three_ssim`                              | `ThreeSSIM`                                    |
+
+```python
+score = SSIM(reduction="batch")(x, y)
+ms_score = SSIM(reduction="batch")(x, y, return_msssim=True)
+weighted_score = weighted_ssim(x, y, weights, window_size=5, L=1, reduction="batch")
+gradient_score = GradientSSIM(window_size=5, L=1, reduction="batch")(x, y)
+three_score = ThreeSSIM(window_size=5, L=1, reduction="batch", variance_window_size=5)(x, y)
+```
 
 ## Structural similarity index
 

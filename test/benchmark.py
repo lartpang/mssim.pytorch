@@ -22,6 +22,7 @@ class BenchmarkCase:
     name: str
     shape: Tuple[int, ...]
     kwargs: Dict
+    metric: str = "ssim"
     note: str = ""
 
 
@@ -103,6 +104,33 @@ def run_callable(fn, warmup, iters):
 def current_callable(module, case, x, y):
     kwargs = dict(case.kwargs)
     return_msssim = kwargs.pop("return_msssim", False)
+    metric_name = case.metric
+
+    if metric_name == "weighted_ssim":
+        metric = module.WeightedSSIM(**kwargs).eval()
+        weights = torch.ones_like(x)
+
+        def call():
+            return metric(x, y, weights)
+
+        return call
+
+    if metric_name == "gradient_ssim":
+        metric = module.GradientSSIM(**kwargs).eval()
+
+        def call():
+            return metric(x, y)
+
+        return call
+
+    if metric_name == "three_ssim":
+        metric = module.ThreeSSIM(**kwargs).eval()
+
+        def call():
+            return metric(x, y)
+
+        return call
+
     metric = module.SSIM(**kwargs).eval()
 
     def call():
@@ -112,6 +140,8 @@ def current_callable(module, case, x, y):
 
 
 def v1_callable(module, case, x, y):
+    if case.metric != "ssim":
+        raise NotImplementedError("v1.0.0 has no variant SSIM APIs")
     kwargs = dict(case.kwargs)
     data_dim = kwargs.pop("data_dim", 2)
     if data_dim != 2:
@@ -138,6 +168,8 @@ def v1_callable(module, case, x, y):
 
 
 def po_hsun_su_callable(module, case, x, y):
+    if case.metric != "ssim":
+        raise NotImplementedError("Po-Hsun-Su implementation has no variant SSIM APIs")
     kwargs = dict(case.kwargs)
     if kwargs.get("data_dim", 2) != 2:
         raise NotImplementedError("Po-Hsun-Su implementation only supports 2D tensors")
@@ -164,6 +196,8 @@ def po_hsun_su_callable(module, case, x, y):
 
 
 def vainf_callable(module, case, x, y):
+    if case.metric != "ssim":
+        raise NotImplementedError("VainF implementation has no variant SSIM APIs")
     kwargs = dict(case.kwargs)
     data_dim = kwargs.get("data_dim", 2)
     if data_dim not in (2, 3):
@@ -385,6 +419,24 @@ def make_cases(image_size):
                 "return_msssim": True,
             },
         ),
+        BenchmarkCase(
+            name="weighted_ssim2d_w5_batch",
+            shape=size_2d,
+            kwargs={"data_dim": 2, "window_size": 5, "L": 1, "reduction": "batch"},
+            metric="weighted_ssim",
+        ),
+        BenchmarkCase(
+            name="gradient_ssim2d_w5_batch",
+            shape=size_2d,
+            kwargs={"window_size": 5, "L": 1, "reduction": "batch"},
+            metric="gradient_ssim",
+        ),
+        BenchmarkCase(
+            name="three_ssim2d_w5_batch",
+            shape=size_2d,
+            kwargs={"window_size": 5, "L": 1, "reduction": "batch", "variance_window_size": 5},
+            metric="three_ssim",
+        ),
     ]
 
 
@@ -404,6 +456,7 @@ def case_config_row(case):
     kwargs = case.kwargs
     return [
         case.name,
+        format_config_value(case.metric),
         format_config_value(case.shape),
         format_config_value(kwargs.get("data_dim", 2)),
         format_config_value(kwargs.get("window_size", 11)),
@@ -431,8 +484,8 @@ def format_markdown(case_results, warmup, iters, threads, baseline_ref, image_si
         "",
         "## Scenario Configurations",
         "",
-        "| case | shape | data_dim | window_size | padding | ensemble_kernel | reduction | return_log | return_msssim |",
-        "| --- | --- | ---: | --- | --- | --- | --- | --- | --- |",
+        "| case | metric | shape | data_dim | window_size | padding | ensemble_kernel | reduction | return_log | return_msssim |",
+        "| --- | --- | --- | ---: | --- | --- | --- | --- | --- | --- |",
     ]
     for case, _results in case_results:
         lines.append("| " + " | ".join(case_config_row(case)) + " |")

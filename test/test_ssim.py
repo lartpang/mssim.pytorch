@@ -143,6 +143,140 @@ class CheckSSIMTestCase(unittest.TestCase):
         ).item()
         self.assertAlmostEqual(our_ssim_score, vainf_ssim_score)
 
+    def test_msssim_only_clamps_negative_components_when_requested(self):
+        class NegativeCore(torch.nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.filter = torch.nn.Module()
+                self.filter.register_buffer("gaussian_window", torch.ones(1))
+
+            def ssim_map(self, x, y):
+                return x.new_full((x.shape[0], 1, 8, 8), -0.5), x.new_full((x.shape[0], 1, 8, 8), -0.25)
+
+            def forward(self, x, y):
+                return self.ssim_map(x, y)
+
+        x = torch.rand(2, 1, 256, 256)
+        y = torch.rand_like(x)
+        metric = ssim.SSIM(L=1, data_dim=2, return_log=False)
+        metric.core = NegativeCore()
+        nonnegative_metric = ssim.SSIM(L=1, data_dim=2, return_log=False, nonnegative=True)
+        nonnegative_metric.core = NegativeCore()
+
+        default_score = metric(x, y, return_msssim=True)
+        nonnegative_score = nonnegative_metric(x, y, return_msssim=True)
+
+        self.assertTrue(torch.isnan(default_score).item())
+        self.assertTrue(torch.isfinite(nonnegative_score).item())
+        self.assertEqual(nonnegative_score.item(), 0.0)
+
+    def test_variant_public_api_and_composition(self):
+        expected_names = {
+            "IdentityPreprocess",
+            "GradientSSIMPreprocess",
+            "SSIMMapReducer",
+            "ThreeSSIMReducer",
+            "MSSSIM",
+            "WeightedSSIM",
+            "GradientSSIM",
+            "ThreeSSIM",
+            "ms_ssim",
+            "weighted_ssim",
+            "gradient_ssim",
+            "three_ssim",
+        }
+        for name in expected_names:
+            self.assertTrue(hasattr(ssim, name), msg=f"missing public API: {name}")
+
+        plain = ssim.SSIM()
+        weighted = ssim.WeightedSSIM()
+        gradient = ssim.GradientSSIM()
+        three = ssim.ThreeSSIM()
+
+        self.assertIsInstance(plain.preprocess, ssim.IdentityPreprocess)
+        self.assertIsInstance(plain.reducer, ssim.SSIMMapReducer)
+        self.assertIsInstance(weighted, ssim.SSIM)
+        self.assertIs(ssim.WeightedSSIM.__init__, ssim.SSIM.__init__)
+        self.assertIsInstance(gradient.preprocess, ssim.GradientSSIMPreprocess)
+        self.assertIsInstance(gradient.reducer, ssim.SSIMMapReducer)
+        self.assertIsInstance(three.preprocess, ssim.IdentityPreprocess)
+        self.assertIsInstance(three.reducer, ssim.ThreeSSIMReducer)
+
+    def test_weighted_ssim_matches_plain_ssim_with_unit_weights(self):
+        weights = torch.ones_like(self.x_2d)
+        kwargs = dict(window_size=5, L=1, reduction="batch", data_dim=2)
+
+        weighted_score = ssim.weighted_ssim(self.x_2d, self.y_2d, weights, **kwargs)
+        integrated_score = ssim.ssim(self.x_2d, self.y_2d, weights=weights, **kwargs)
+        module_score = ssim.WeightedSSIM(**kwargs)(self.x_2d, self.y_2d, weights)
+        plain_score = ssim.ssim(self.x_2d, self.y_2d, **kwargs)
+
+        self.assertTrue(torch.equal(weighted_score, plain_score))
+        self.assertTrue(torch.equal(integrated_score, weighted_score))
+        self.assertTrue(torch.equal(module_score, weighted_score))
+
+    def test_weighted_ssim_return_log_matches_other_interfaces(self):
+        weights = torch.ones_like(self.x_2d)
+        kwargs = dict(window_size=5, L=1, reduction="batch", data_dim=2, return_log=True)
+
+        functional_score = ssim.weighted_ssim(self.x_2d, self.y_2d, weights, **kwargs)
+        integrated_score = ssim.ssim(self.x_2d, self.y_2d, weights=weights, **kwargs)
+        module_score = ssim.WeightedSSIM(**kwargs)(self.x_2d, self.y_2d, weights)
+
+        self.assertTrue(torch.equal(functional_score, integrated_score))
+        self.assertTrue(torch.equal(functional_score, module_score))
+
+    def test_weighted_ssim_rejects_invalid_weights(self):
+        kwargs = dict(window_size=5, L=1, data_dim=2)
+
+        with self.assertRaises(ValueError):
+            ssim.weighted_ssim(self.x_2d, self.y_2d, torch.zeros_like(self.x_2d), **kwargs)
+        with self.assertRaises(ValueError):
+            ssim.weighted_ssim(self.x_2d, self.y_2d, -torch.ones_like(self.x_2d), **kwargs)
+
+        invalid_weights = torch.ones_like(self.x_2d)
+        invalid_weights[0, 0, 0, 0] = float("nan")
+        with self.assertRaises(ValueError):
+            ssim.weighted_ssim(self.x_2d, self.y_2d, invalid_weights, **kwargs)
+
+    def test_gradient_ssim_identical_image_is_one_and_module_matches_functional(self):
+        kwargs = dict(window_size=5, L=1, reduction="batch")
+
+        functional_score = ssim.gradient_ssim(self.x_2d, self.x_2d.clone(), **kwargs)
+        module_score = ssim.GradientSSIM(**kwargs)(self.x_2d, self.x_2d.clone())
+
+        self.assertTrue(torch.equal(functional_score, torch.ones_like(functional_score)))
+        self.assertTrue(torch.equal(functional_score, module_score))
+
+    def test_gradient_ssim_uses_single_eps_for_preprocess_and_reducer(self):
+        metric = ssim.GradientSSIM(window_size=5, L=1, reduction="batch", eps=1e-4)
+
+        self.assertEqual(metric.reducer.eps, 1e-4)
+        self.assertEqual(metric.preprocess.gradient_filter.eps, 1e-4)
+
+    def test_three_ssim_identical_image_is_one_and_module_matches_functional(self):
+        kwargs = dict(window_size=5, L=1, reduction="batch", variance_window_size=5)
+
+        functional_score = ssim.three_ssim(self.x_2d, self.x_2d.clone(), **kwargs)
+        module_score = ssim.ThreeSSIM(**kwargs)(self.x_2d, self.x_2d.clone())
+
+        self.assertTrue(torch.equal(functional_score, torch.ones_like(functional_score)))
+        self.assertTrue(torch.equal(functional_score, module_score))
+
+    def test_variant_half_modules_still_use_float32_compute(self):
+        gradient_kwargs = dict(window_size=5, L=1, reduction="batch")
+        three_kwargs = dict(window_size=5, L=1, reduction="batch", variance_window_size=5)
+
+        gradient_expected = ssim.GradientSSIM(**gradient_kwargs)(self.x_2d, self.y_2d)
+        gradient_actual = ssim.GradientSSIM(**gradient_kwargs).half()(self.x_2d, self.y_2d)
+        three_expected = ssim.ThreeSSIM(**three_kwargs)(self.x_2d, self.y_2d)
+        three_actual = ssim.ThreeSSIM(**three_kwargs).half()(self.x_2d, self.y_2d)
+
+        self.assertEqual(gradient_actual.dtype, torch.float32)
+        self.assertEqual(three_actual.dtype, torch.float32)
+        self.assertTrue(torch.equal(gradient_actual, gradient_expected))
+        self.assertTrue(torch.equal(three_actual, three_expected))
+
     def test_ssim2d_half_input_uses_float32_compute(self):
         metric = ssim.SSIM(L=1, data_dim=2)
         x_half = self.x_2d.half()
